@@ -1,12 +1,13 @@
 (() => {
   const tileConfigUrl=new URL('Backend/tile-variants.json',new URL('.',document.currentScript.src));
   const headers=['Product type','Revenue Segment','Parent SKU Code','Parent Product Name','Characters Length (40 Characters)','Child SKU Code','Child Description','Characters Length (40 Characters)','Packing Dimensions (MM) (LXWXH)','Product Dimensions (MM) (LXWXH)','Gross Weight (KG)','Net Weight (KG)','SAP Code Parent','SAP Code Child','Plant','Conversion Factor'];
+  const hardwareHeaders=['Product Type','Hardware Material Code','Hardware Material Description','Character Length (40 Character Limit)','Plant Code','Base UOM','Base Qty','Alt BOM','Component Material Code','Component Material Description','Component Quantity','UOM','Final Consumption Plant','Product Owning Plant'];
   const productCodes=new Map([['coffee table','MCFT'],['dining table','MDINE'],['side table','MST'],['study table','ST'],['metal bed','MTB']]);
   const defaultTileCodes=[['Amphora White','AMW'],['Alaska White','ALW'],['Antaliya Beige','AB'],['Breccia Natural','BRN'],['Colonial Black','COB'],['Fragment White','FW'],['Fossil Black','FOB'],['Golden Statuario','GLDST'],['Omani Grey','OMG'],['Portoro Black','PRTB'],['Simless White','SW'],['Versace Aloud','VA'],['Vibranium Brown','VRB'],['Volga Blue','VOB']];
   const tileCodes=new Map();
   const $=id=>document.getElementById(id),escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const normalized=value=>String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-  let currentGroups=[],currentModel='',currentData=null,removedTileNames=new Set(),tileSignature='';
+  let currentGroups=[],currentModel='',currentData=null,currentHardwareRows=[],removedTileNames=new Set(),tileSignature='';
 
   async function loadTileVariants(){
     try{
@@ -62,13 +63,36 @@
     }
     return '';
   }
+  function extractHardwareItems(sheets){
+    const items=[];
+    for(const rows of sheets){
+      for(let headerRow=0;headerRow<rows.length;headerRow++){
+        const labels=(rows[headerRow]||[]).map(value=>normalized(value));
+        const slIndex=labels.findIndex(value=>/^(?:sl no|serial no|serial number)$/.test(value));
+        const partIndex=labels.findIndex(value=>/^(?:part number|part no|component material code)$/.test(value));
+        const materialIndex=labels.findIndex(value=>value==='material'||value==='component material description');
+        const qtyIndex=labels.findIndex(value=>/^(?:qty|quantity)$/.test(value));
+        const uomIndex=labels.findIndex(value=>/^(?:uom|unit of measure)$/.test(value));
+        if([slIndex,partIndex,materialIndex,qtyIndex,uomIndex].some(index=>index<0))continue;
+        for(let rowIndex=headerRow+1;rowIndex<rows.length;rowIndex++){
+          const row=rows[rowIndex]||[],serial=String(row[slIndex]??'').trim().toUpperCase();
+          if(!/^[A-Z]$/.test(serial))continue;
+          const partNumber=String(row[partIndex]??'').trim(),material=String(row[materialIndex]??'').trim(),quantity=String(row[qtyIndex]??'').trim(),uom=String(row[uomIndex]??'').trim();
+          if(partNumber||material||quantity||uom)items.push({serial,partNumber,material,quantity,uom});
+        }
+        break;
+      }
+    }
+    return items;
+  }
   function extractData(sheets){
     const rows=sheets.flat();
     const model=fieldValue(rows,/^model name$/i),productType=fieldValue(rows,/^product type$/i),rawSize=fieldValue(rows,/^size$/i),sizeMatch=rawSize.match(/\b(big|small|combo)\b/i),size=sizeMatch?sizeMatch[1][0].toUpperCase()+sizeMatch[1].slice(1).toLowerCase():'';
     const typeCode=productCodes.get(normalized(productType));if(!model)throw new Error('Model Name is missing from the workbook.');if(!typeCode)throw new Error('Add a supported Product Type: Coffee Table, Dining Table, Side Table, Study Table or Metal Bed.');if(!rawSize||(/\b(null|none|blank)\b/i.test(rawSize))){}else if(!size)throw new Error('Size must be Big, Small, Combo, or blank.');
     const packingText=labeledValues(rows,/^(?:packing|packaging)\s+dimensions?$/i),packing=packingText.split(/[,;|\n]+/).map(value=>value.trim()).filter(Boolean),productDimensions=labeledValues(rows,/^product\s+dimensions?$/i),grossWeight=fieldValue(rows,/^gross\s+weight(?:\s*\([^)]*\))?$/i),netWeight=fieldValue(rows,/^net\s+weight(?:\s*\([^)]*\))?$/i);
     if(!packing.length)throw new Error('Packing Dimension is missing. Add one LXWXH dimension for each child box, separated by commas.');if(!productDimensions)throw new Error('Product Dimension is missing.');
-    return {model,productType,typeCode,size,sizeCode:size==='Big'?'B':size==='Small'?'S':size==='Combo'?'C':'',packing,productDimensions,grossWeight,netWeight,tiles:[...tileCodes.entries()]};
+    const plant=fieldValue(rows,/^plant(?:\s+code)?$/i)||'MKA7';
+    return {model,productType,typeCode,size,sizeCode:size==='Big'?'B':size==='Small'?'S':size==='Combo'?'C':'',packing,productDimensions,grossWeight,netWeight,plant,hardwareItems:extractHardwareItems(sheets),tiles:[...tileCodes.entries()]};
   }
   function makeGroups(data,variants=[...tileCodes.entries()]){
     const code=value=>String(value??'').toUpperCase().replace(/\s+/g,''),groups=[];
@@ -87,6 +111,14 @@
     const boxes=groups[0]?.rows.length||0,tiles=groups.map(group=>group.name).join(', ');
     $('summary').innerHTML=[['Model Name',data.model],['Product Type',data.productType],['Size',data.size||'Blank'],['Tile variants',tiles],['Child SKUs per parent',String(boxes)],['Packing dimensions',data.packing.join(' / ')],['Product dimensions',data.productDimensions]].map(([label,value])=>`<div><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join('');$('download').classList.add('visible');
     $('download').disabled=!groups.length;$('resultCaption').textContent=groups.length?`Created ${groups.length} parent product${groups.length===1?'':'s'} and ${groups.reduce((sum,group)=>sum+group.rows.length,0)} child SKU rows.`:'No tile variants selected.';$('result').classList.add('visible');
+  }
+  function renderHardware(data){
+    const sizeLabel=data.size?' '+data.size:'',description=('Hardware '+data.model+sizeLabel+' '+data.productType).slice(0,40);
+    currentHardwareRows=data.hardwareItems.map(item=>[data.productType,'',description,String(description.length),data.plant||'MKA7','N','1','1',item.partNumber,item.material,item.quantity,item.uom,'MKA7','MKA7']);
+    $('hardwareHead').innerHTML=hardwareHeaders.map(value=>'<th>'+escapeHtml(value)+'</th>').join('');
+    $('hardwareRows').innerHTML=currentHardwareRows.length?currentHardwareRows.map(row=>'<tr>'+row.map(value=>'<td>'+escapeHtml(value)+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="14">No single-letter SL.NO hardware rows were found in the uploaded workbook.</td></tr>';
+    $('hardwareCaption').textContent='Created '+currentHardwareRows.length+' hardware component row'+(currentHardwareRows.length===1?'':'s')+' from single-letter SL.NO entries.';
+    $('hardwareDownload').classList.toggle('visible',currentHardwareRows.length>0);$('hardwareDownload').disabled=!currentHardwareRows.length;
   }
   function xmlEscape(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function colName(index){let number=index+1,label='';while(number){const rem=(number-1)%26;label=String.fromCharCode(65+rem)+label;number=Math.floor((number-1)/26);}return label;}
@@ -109,6 +141,34 @@
     const centralSize=centralParts.reduce((sum,part)=>sum+part.length,0),end=new Uint8Array(22),endView=new DataView(end.buffer);u32(endView,0,0x06054b50);u16(endView,4,0);u16(endView,6,0);u16(endView,8,centralParts.length);u16(endView,10,centralParts.length);u32(endView,12,centralSize);u32(endView,16,offset);u16(endView,20,0);
     return new Blob([...localParts,...centralParts,end],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   }
+  function buildHardwareWorkbook(rows){
+    const tableRows=[hardwareHeaders,...rows],widths=[20,24,40,24,16,14,12,12,24,38,18,14,24,24];
+    const cols=widths.map((width,index)=>'<col min="'+(index+1)+'" max="'+(index+1)+'" width="'+width+'" customWidth="1"/>').join('');
+    const body=tableRows.map((row,index)=>{
+      const rowNumber=index+1;if(!row)return '<row r="'+rowNumber+'"/>';
+      const cells=row.map((value,col)=>{
+        const ref=colName(col)+rowNumber,style=index===0?' s="1"':'';
+        if(index>0&&col===3)return '<c r="'+ref+'"'+style+'><f>LEN(C'+rowNumber+')</f><v>'+String(row[col]??'').replace(/[^0-9]/g,'')+'</v></c>';
+        if(index>0&&[6,7,10].includes(col)&&value!==''&&Number.isFinite(Number(value)))return '<c r="'+ref+'"'+style+'><v>'+Number(value)+'</v></c>';
+        return '<c r="'+ref+'" t="inlineStr"'+style+'><is><t xml:space="preserve">'+xmlEscape(value)+'</t></is></c>';
+      }).join('');
+      return '<row r="'+rowNumber+'">'+cells+'</row>';
+    }).join('');
+    const files={
+      '[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
+      '_rels/.rels':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+      'xl/workbook.xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Hardware BOM" sheetId="1" r:id="rId1"/></sheets></workbook>',
+      'xl/_rels/workbook.xml.rels':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
+      'xl/styles.xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
+      'xl/worksheets/sheet1.xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:N'+tableRows.length+'"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="19"/><cols>'+cols+'</cols><sheetData>'+body+'</sheetData><pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>'
+    };
+    const encoder=new TextEncoder(),u16=(view,offset,value)=>view.setUint16(offset,value,true),u32=(view,offset,value)=>view.setUint32(offset,value>>>0,true),crc32=data=>{let crc=0xffffffff;for(const byte of data){crc^=byte;for(let bit=0;bit<8;bit++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}return (crc^0xffffffff)>>>0;};
+    const localParts=[],centralParts=[];let offset=0;
+    for(const [path,content] of Object.entries(files)){const name=encoder.encode(path),data=encoder.encode(content),crc=crc32(data),local=new Uint8Array(30+name.length+data.length),localView=new DataView(local.buffer);u32(localView,0,0x04034b50);u16(localView,4,20);u16(localView,6,0);u16(localView,8,0);u16(localView,10,0);u16(localView,12,33);u32(localView,14,crc);u32(localView,18,data.length);u32(localView,22,data.length);u16(localView,26,name.length);u16(localView,28,0);local.set(name,30);local.set(data,30+name.length);localParts.push(local);const central=new Uint8Array(46+name.length),centralView=new DataView(central.buffer);u32(centralView,0,0x02014b50);u16(centralView,4,20);u16(centralView,6,20);u16(centralView,8,0);u16(centralView,10,0);u16(centralView,12,0);u16(centralView,14,33);u32(centralView,16,crc);u32(centralView,20,data.length);u32(centralView,24,data.length);u16(centralView,28,name.length);u16(centralView,30,0);u16(centralView,32,0);u16(centralView,34,0);u16(centralView,36,0);u32(centralView,38,0);u32(centralView,42,offset);central.set(name,46);centralParts.push(central);offset+=local.length;}
+    const centralSize=centralParts.reduce((sum,part)=>sum+part.length,0),end=new Uint8Array(22),endView=new DataView(end.buffer);u32(endView,0,0x06054b50);u16(endView,4,0);u16(endView,6,0);u16(endView,8,centralParts.length);u16(endView,10,centralParts.length);u32(endView,12,centralSize);u32(endView,16,offset);u16(endView,20,0);
+    return new Blob([...localParts,...centralParts,end],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  }
+  function downloadHardware(event){if(!event?.isTrusted||event.currentTarget!==$('hardwareDownload')||!currentHardwareRows.length)return;const url=URL.createObjectURL(buildHardwareWorkbook(currentHardwareRows)),anchor=document.createElement('a');anchor.href=url;anchor.download=currentModel.replace(/[\\/:*?"<>|]/g,'_')+' - Hardware BOM.xlsx';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1200);}
   function download(event){if(!event?.isTrusted||event.currentTarget!==$('download')||!currentGroups.length)return;const url=URL.createObjectURL(buildWorkbook(currentGroups)),anchor=document.createElement('a');anchor.href=url;anchor.download=`Summary BOM Sheet - ${currentModel.replace(/[\\/:*?"<>|]/g,'_')}.xlsx`;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1200);}
   function activateSectionTab(tab){
     const tabs=[...document.querySelectorAll('[role="tab"]')];
@@ -117,12 +177,12 @@
   }
   async function processFile(file){
     const status=$('status');$('result').classList.remove('visible');status.classList.remove('error');status.textContent='Reading the Excel workbook…';
-    try{const data=extractData(await readWorkbook(await file.arrayBuffer()));currentModel=data.model;currentData=data;removedTileNames.clear();currentGroups=makeGroups(data);render(data,currentGroups);status.textContent='';}
+    try{const data=extractData(await readWorkbook(await file.arrayBuffer()));currentModel=data.model;currentData=data;removedTileNames.clear();currentGroups=makeGroups(data);render(data,currentGroups);renderHardware(data);status.textContent='';}
     catch(error){currentGroups=[];status.classList.add('error');status.textContent=error?.message||'Unable to process this workbook.';}
   }
   async function initialize(){
     await loadTileVariants();
-    $('bomFile').addEventListener('change',event=>{const file=event.target.files?.[0];if(file)processFile(file);});$('download').addEventListener('click',download);
+    $('bomFile').addEventListener('change',event=>{const file=event.target.files?.[0];if(file)processFile(file);});$('download').addEventListener('click',download);$('hardwareDownload').addEventListener('click',downloadHardware);
     const tablist=document.querySelector('[role="tablist"]'),tabs=[...tablist.querySelectorAll('[role="tab"]')];tabs.forEach(tab=>tab.tabIndex=tab.getAttribute('aria-selected')==='true'?0:-1);
     tablist.addEventListener('click',event=>{const tab=event.target.closest('[role="tab"]');if(tab)activateSectionTab(tab);});
     tablist.addEventListener('keydown',event=>{const active=tabs.indexOf(document.activeElement);if(active<0)return;let next;if(event.key==='ArrowRight')next=(active+1)%tabs.length;else if(event.key==='ArrowLeft')next=(active-1+tabs.length)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();tabs[next].focus();activateSectionTab(tabs[next]);});

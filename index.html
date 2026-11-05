@@ -37,7 +37,9 @@
         <div class="actions"><button id="download" class="download">Download Summary BOM Sheet</button></div>
       </section>
       <section id="section-hardware" class="section-content" role="tabpanel" aria-labelledby="tab-hardware" hidden>
-        <div class="section-placeholder"><h3>Hardware BOM</h3><p>This section is ready to be set up.</p></div>
+        <p class="sub" id="hardwareCaption">Hardware components are read from single-letter SL.NO entries (A, B, C, and so on).</p>
+        <div class="table-wrap"><table><thead><tr id="hardwareHead"></tr></thead><tbody id="hardwareRows"></tbody></table></div>
+        <div class="actions"><button id="hardwareDownload" class="download" type="button">Download Hardware BOM</button></div>
       </section>
       <section id="section-inhouse" class="section-content" role="tabpanel" aria-labelledby="tab-inhouse" hidden>
         <div class="section-placeholder"><h3>Inhouse BOM</h3><p>This section is ready to be set up.</p></div>
@@ -47,7 +49,7 @@
       </section>
     </section>
   </main>
-  <script src="app.js?v=20261105-bom-sections" defer></script>
+  <script src="app.js?v=20261105-hardware-bom" defer></script>
 </body>
 </html>
 
