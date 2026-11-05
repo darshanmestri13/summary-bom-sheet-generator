@@ -196,7 +196,8 @@
       return '<row r="'+rowNumber+'">'+cells+'</row>';
     }).join('');
     const merges=sheet.merges.map(merge=>'<mergeCell ref="'+colName(merge.col)+merge.start+':'+colName(merge.col)+merge.end+'"/>').join('');
-    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="'+dimension+'"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="19"/><cols>'+cols+'</cols><sheetData>'+body+'</sheetData>'+(merges?'<mergeCells count="'+sheet.merges.length+'">'+merges+'</mergeCells>':'')+'<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>';
+    const viewXml=rows.length?'<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>':'',colsXml=cols?'<cols>'+cols+'</cols>':'';
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="'+dimension+'"/>'+viewXml+(rows.length?'<sheetFormatPr defaultRowHeight="19"/>':'')+colsXml+'<sheetData>'+body+'</sheetData>'+(merges?'<mergeCells count="'+sheet.merges.length+'">'+merges+'</mergeCells>':'')+'<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>';
   }
   function createWorkbook(sheets){
     const sheetOverrides=sheets.map((sheet,index)=>'<Override PartName="/xl/worksheets/sheet'+(index+1)+'.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join('');
