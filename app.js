@@ -119,6 +119,7 @@
     $('hardwareRows').innerHTML=currentHardwareRows.length?currentHardwareRows.map(row=>'<tr>'+row.map(value=>'<td>'+escapeHtml(value)+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="14">No single-letter SL.NO hardware rows were found in the uploaded workbook.</td></tr>';
     $('hardwareCaption').textContent='Created '+currentHardwareRows.length+' hardware component row'+(currentHardwareRows.length===1?'':'s')+' from single-letter SL.NO entries.';
     $('hardwareDownload').classList.toggle('visible',currentHardwareRows.length>0);$('hardwareDownload').disabled=!currentHardwareRows.length;
+    $('downloadAll').disabled=!currentData;
   }
   function xmlEscape(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function colName(index){let number=index+1,label='';while(number){const rem=(number-1)%26;label=String.fromCharCode(65+rem)+label;number=Math.floor((number-1)/26);}return label;}
@@ -168,6 +169,57 @@
     const centralSize=centralParts.reduce((sum,part)=>sum+part.length,0),end=new Uint8Array(22),endView=new DataView(end.buffer);u32(endView,0,0x06054b50);u16(endView,4,0);u16(endView,6,0);u16(endView,8,centralParts.length);u16(endView,10,centralParts.length);u32(endView,12,centralSize);u32(endView,16,offset);u16(endView,20,0);
     return new Blob([...localParts,...centralParts,end],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   }
+  function tableSheet(name,columns,rows,widths,options={}){
+    return {name,columns,rows:[columns,...rows],widths,formulaColumns:options.formulaColumns||{},numericColumns:options.numericColumns||[],format2Columns:options.format2Columns||[],merges:options.merges||[]};
+  }
+  function summarySheet(groups){
+    const merges=[];let sheetRow=2;
+    for(const group of groups){const first=sheetRow,last=sheetRow+group.rows.length-1;if(last>first)merges.push({col:9,start:first,end:last});sheetRow=last+2;}
+    return tableSheet('Summary BOM Sheet',headers,allRows(groups),[20,24,28,40,20,36,40,20,30,30,18,18,20,20,14,18],{formulaColumns:{4:'D',7:'G'},numericColumns:[10,11,15],format2Columns:[15],merges});
+  }
+  function hardwareSheet(rows){
+    return tableSheet('Hardware BOM',hardwareHeaders,rows,[20,24,40,24,16,14,12,12,24,38,18,14,24,24],{formulaColumns:{3:'C'},numericColumns:[6,7,10]});
+  }
+  function emptySheet(name){return {name,columns:[],rows:[],widths:[],formulaColumns:{},numericColumns:[],format2Columns:[],merges:[]};}
+  function worksheetXml(sheet){
+    const rows=sheet.rows||[],columnCount=sheet.columns.length||1,lastColumn=colName(columnCount-1),dimension=rows.length?'A1:'+lastColumn+rows.length:'A1';
+    const cols=(sheet.widths||[]).map((width,index)=>'<col min="'+(index+1)+'" max="'+(index+1)+'" width="'+width+'" customWidth="1"/>').join('');
+    const body=rows.map((row,index)=>{
+      const rowNumber=index+1;if(!row)return '<row r="'+rowNumber+'"/>';
+      const cells=row.map((value,col)=>{
+        const ref=colName(col)+rowNumber,style=index===0?' s="1"':sheet.format2Columns.includes(col)?' s="2"':'';
+        if(index>0&&sheet.formulaColumns[col])return '<c r="'+ref+'"'+style+'><f>LEN('+sheet.formulaColumns[col]+rowNumber+')</f><v>'+String(value??'').replace(/[^0-9]/g,'')+'</v></c>';
+        if(index>0&&sheet.numericColumns.includes(col)&&value!==''&&Number.isFinite(Number(value)))return '<c r="'+ref+'"'+style+'><v>'+Number(value)+'</v></c>';
+        if(sheet.merges.some(merge=>merge.col===col&&rowNumber>merge.start&&rowNumber<=merge.end))return '';
+        return '<c r="'+ref+'" t="inlineStr"'+style+'><is><t xml:space="preserve">'+xmlEscape(value)+'</t></is></c>';
+      }).join('');
+      return '<row r="'+rowNumber+'">'+cells+'</row>';
+    }).join('');
+    const merges=sheet.merges.map(merge=>'<mergeCell ref="'+colName(merge.col)+merge.start+':'+colName(merge.col)+merge.end+'"/>').join('');
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="'+dimension+'"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="19"/><cols>'+cols+'</cols><sheetData>'+body+'</sheetData>'+(merges?'<mergeCells count="'+sheet.merges.length+'">'+merges+'</mergeCells>':'')+'<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>';
+  }
+  function createWorkbook(sheets){
+    const sheetOverrides=sheets.map((sheet,index)=>'<Override PartName="/xl/worksheets/sheet'+(index+1)+'.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join('');
+    const workbookSheets=sheets.map((sheet,index)=>'<sheet name="'+xmlEscape(sheet.name)+'" sheetId="'+(index+1)+'" r:id="rId'+(index+1)+'"/>').join('');
+    const sheetRelationships=sheets.map((sheet,index)=>'<Relationship Id="rId'+(index+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+(index+1)+'.xml"/>').join('');
+    const files={
+      '[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+sheetOverrides+'<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
+      '_rels/.rels':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+      'xl/workbook.xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'+workbookSheets+'</sheets></workbook>',
+      'xl/_rels/workbook.xml.rels':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+sheetRelationships+'<Relationship Id="rId'+(sheets.length+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
+      'xl/styles.xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="0.00"/></numFmts><fonts count="2"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'
+    };
+    sheets.forEach((sheet,index)=>files['xl/worksheets/sheet'+(index+1)+'.xml']=worksheetXml(sheet));
+    const encoder=new TextEncoder(),u16=(view,offset,value)=>view.setUint16(offset,value,true),u32=(view,offset,value)=>view.setUint32(offset,value>>>0,true),crc32=data=>{let crc=0xffffffff;for(const byte of data){crc^=byte;for(let bit=0;bit<8;bit++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}return (crc^0xffffffff)>>>0;};
+    const localParts=[],centralParts=[];let offset=0;
+    for(const [path,content] of Object.entries(files)){const name=encoder.encode(path),data=encoder.encode(content),crc=crc32(data),local=new Uint8Array(30+name.length+data.length),localView=new DataView(local.buffer);u32(localView,0,0x04034b50);u16(localView,4,20);u16(localView,6,0);u16(localView,8,0);u16(localView,10,0);u16(localView,12,33);u32(localView,14,crc);u32(localView,18,data.length);u32(localView,22,data.length);u16(localView,26,name.length);u16(localView,28,0);local.set(name,30);local.set(data,30+name.length);localParts.push(local);const central=new Uint8Array(46+name.length),centralView=new DataView(central.buffer);u32(centralView,0,0x02014b50);u16(centralView,4,20);u16(centralView,6,20);u16(centralView,8,0);u16(centralView,10,0);u16(centralView,12,0);u16(centralView,14,33);u32(centralView,16,crc);u32(centralView,20,data.length);u32(centralView,24,data.length);u16(centralView,28,name.length);u16(centralView,30,0);u16(centralView,32,0);u16(centralView,34,0);u16(centralView,36,0);u32(centralView,38,0);u32(centralView,42,offset);central.set(name,46);centralParts.push(central);offset+=local.length;}
+    const centralSize=centralParts.reduce((sum,part)=>sum+part.length,0),end=new Uint8Array(22),endView=new DataView(end.buffer);u32(endView,0,0x06054b50);u16(endView,4,0);u16(endView,6,0);u16(endView,8,centralParts.length);u16(endView,10,centralParts.length);u32(endView,12,centralSize);u32(endView,16,offset);u16(endView,20,0);
+    return new Blob([...localParts,...centralParts,end],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  }
+  function buildWorkbook(groups){return createWorkbook([summarySheet(groups)]);}
+  function buildHardwareWorkbook(rows){return createWorkbook([hardwareSheet(rows)]);}
+  function buildAllBomsWorkbook(){return createWorkbook([summarySheet(currentGroups),hardwareSheet(currentHardwareRows),emptySheet('Inhouse BOM'),emptySheet('Child BOM')]);}
+  function downloadAllBoms(event){if(!event?.isTrusted||event.currentTarget!==$('downloadAll')||!currentData)return;const url=URL.createObjectURL(buildAllBomsWorkbook()),anchor=document.createElement('a');anchor.href=url;anchor.download=currentModel.replace(/[\\/:*?"<>|]/g,'_')+' - BOM.xlsx';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1200);}
   function downloadHardware(event){if(!event?.isTrusted||event.currentTarget!==$('hardwareDownload')||!currentHardwareRows.length)return;const url=URL.createObjectURL(buildHardwareWorkbook(currentHardwareRows)),anchor=document.createElement('a');anchor.href=url;anchor.download=currentModel.replace(/[\\/:*?"<>|]/g,'_')+' - Hardware BOM.xlsx';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1200);}
   function download(event){if(!event?.isTrusted||event.currentTarget!==$('download')||!currentGroups.length)return;const url=URL.createObjectURL(buildWorkbook(currentGroups)),anchor=document.createElement('a');anchor.href=url;anchor.download=`Summary BOM Sheet - ${currentModel.replace(/[\\/:*?"<>|]/g,'_')}.xlsx`;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1200);}
   function activateSectionTab(tab){
@@ -182,7 +234,7 @@
   }
   async function initialize(){
     await loadTileVariants();
-    $('bomFile').addEventListener('change',event=>{const file=event.target.files?.[0];if(file)processFile(file);});$('download').addEventListener('click',download);$('hardwareDownload').addEventListener('click',downloadHardware);
+    $('bomFile').addEventListener('change',event=>{const file=event.target.files?.[0];if(file)processFile(file);});$('download').addEventListener('click',download);$('hardwareDownload').addEventListener('click',downloadHardware);$('downloadAll').addEventListener('click',downloadAllBoms);
     const tablist=document.querySelector('[role="tablist"]'),tabs=[...tablist.querySelectorAll('[role="tab"]')];tabs.forEach(tab=>tab.tabIndex=tab.getAttribute('aria-selected')==='true'?0:-1);
     tablist.addEventListener('click',event=>{const tab=event.target.closest('[role="tab"]');if(tab)activateSectionTab(tab);});
     tablist.addEventListener('keydown',event=>{const active=tabs.indexOf(document.activeElement);if(active<0)return;let next;if(event.key==='ArrowRight')next=(active+1)%tabs.length;else if(event.key==='ArrowLeft')next=(active-1+tabs.length)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();tabs[next].focus();activateSectionTab(tabs[next]);});
