@@ -110,6 +110,11 @@
     return new Blob([...localParts,...centralParts,end],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   }
   function download(event){if(!event?.isTrusted||event.currentTarget!==$('download')||!currentGroups.length)return;const url=URL.createObjectURL(buildWorkbook(currentGroups)),anchor=document.createElement('a');anchor.href=url;anchor.download=`Summary BOM Sheet - ${currentModel.replace(/[\\/:*?"<>|]/g,'_')}.xlsx`;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1200);}
+  function activateSectionTab(tab){
+    const tabs=[...document.querySelectorAll('[role="tab"]')];
+    for(const item of tabs){const active=item===tab;item.setAttribute('aria-selected',String(active));item.tabIndex=active?0:-1;}
+    for(const panel of document.querySelectorAll('[role="tabpanel"]'))panel.hidden=panel.id!==tab.getAttribute('aria-controls');
+  }
   async function processFile(file){
     const status=$('status');$('result').classList.remove('visible');status.classList.remove('error');status.textContent='Reading the Excel workbook…';
     try{const data=extractData(await readWorkbook(await file.arrayBuffer()));currentModel=data.model;currentData=data;removedTileNames.clear();currentGroups=makeGroups(data);render(data,currentGroups);status.textContent='';}
@@ -118,6 +123,9 @@
   async function initialize(){
     await loadTileVariants();
     $('bomFile').addEventListener('change',event=>{const file=event.target.files?.[0];if(file)processFile(file);});$('download').addEventListener('click',download);
+    const tablist=document.querySelector('[role="tablist"]'),tabs=[...tablist.querySelectorAll('[role="tab"]')];tabs.forEach(tab=>tab.tabIndex=tab.getAttribute('aria-selected')==='true'?0:-1);
+    tablist.addEventListener('click',event=>{const tab=event.target.closest('[role="tab"]');if(tab)activateSectionTab(tab);});
+    tablist.addEventListener('keydown',event=>{const active=tabs.indexOf(document.activeElement);if(active<0)return;let next;if(event.key==='ArrowRight')next=(active+1)%tabs.length;else if(event.key==='ArrowLeft')next=(active-1+tabs.length)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();tabs[next].focus();activateSectionTab(tabs[next]);});
     $('tileVariants').addEventListener('click',event=>{const button=event.target.closest('[data-remove-tile]');if(!button||!currentData)return;const [removed]=currentGroups.splice(Number(button.dataset.removeTile),1);if(removed)removedTileNames.add(removed.name);render(currentData,currentGroups);});
     window.setInterval(async()=>{const changed=await loadTileVariants();if(changed&&currentData){currentGroups=makeGroups(currentData).filter(group=>!removedTileNames.has(group.name));render(currentData,currentGroups);}},1500);
   }
