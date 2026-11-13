@@ -12,9 +12,5 @@
   { "name": "Simless White", "shortForm": "SW" },
   { "name": "Versace Aloud", "shortForm": "VA" },
   { "name": "Vibranium Brown", "shortForm": "VRB" },
-  { "name": "Volga Blue", "shortForm": "VOB" },
-  { "name": "Kshitij Sarkar", "shortForm": "KSW" },
-  { "name": "Darshan Mestri", "shortForm": "DSM" },
-  { "name": "Wakefit", "shortForm": "Wake" },
-  { "name": "IKEA", "shortForm": "IKEA" }
+  { "name": "Volga Blue", "shortForm": "VOB" }
 ]
