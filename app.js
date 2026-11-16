@@ -166,7 +166,7 @@
   function linkInhouseRow(data,description,componentDescription,rowProductType=data.productType,formulaTarget=''){
     return inhouseRow(data,description,{material:componentDescription,qty:'1',nesting:'1',uom:'N',formulaTarget},rowProductType);
   }
-  function inhouseGroup(name,rows,formulaTargetOffset=0){return {name,rows,formulaTargetOffset};}
+  function inhouseGroup(name,rows){return {name,rows};}
   function makeInhouseGroups(data){
     const items=data.inhouseItems||[],fields=item=>`${item.partName} ${item.material} ${item.description}`.toLowerCase();
     const tagged=items.map(item=>({item,text:fields(item),nesting:normalized(item.nesting)}));
@@ -203,8 +203,7 @@
         const tileDesc=`${data.model} ${data.productType} Tile ${tileShort}${tileCutSize?`-${tileCutSize}`:''}`.slice(0,40);
         const quantity=slabUom==='N'?'0.33':slabUom==='FT2'?'7.75':tileQuantity.quantity;
         const component={partNumber,material,quantity,uom:slabUom||tileQuantity.uom};
-        const variantLabel=Array(inhouseHeaders.length).fill('');variantLabel[2]=tileName;variantLabel.isInhouseSectionLabel=true;
-        groups.push(inhouseGroup(tileDesc,[variantLabel,inhouseRow(data,tileDesc,component)],1));
+        groups.push(inhouseGroup(tileDesc,[inhouseRow(data,tileDesc,component)]));
         const topDesc=`${base} Tile Top-${tileShort}`.slice(0,40);
         const mdfDescription=`${data.model} ${data.productType} MDF`.slice(0,40);
         const mdfPlaceholder=inhouseRow(data,topDesc,{material:isMdf?mdfDescription:'',qty:'1',nesting:'1',uom:'N'});
@@ -266,13 +265,13 @@
     currentInhouseGroups=makeInhouseGroups(data);
     $('inhouseHead').innerHTML=inhouseHeaders.map(value=>`<th>${escapeHtml(value)}</th>`).join('');
     const rows=allInhouseRows(currentInhouseGroups,data),reserveCount=data.inhouseHasMdf?7:0;
-    $('inhouseRows').innerHTML=rows.length?rows.map((row,index)=>row?`<tr${row.isInhouseSectionLabel?' class="tile-variant-title"':''}>${row.map(value=>`<td>${escapeHtml(value)}</td>`).join('')}</tr>`:index<reserveCount?'<tr class="mdf-reserved-row"><td colspan="14"></td></tr>':'<tr class="group-gap"><td colspan="14"></td></tr>').join(''):'<tr><td colspan="14">No inhouse component rows were found in the uploaded workbook.</td></tr>';
+    $('inhouseRows').innerHTML=rows.length?rows.map((row,index)=>row?`<tr>${row.map(value=>`<td>${escapeHtml(value)}</td>`).join('')}</tr>`:index<reserveCount?'<tr class="mdf-reserved-row"><td colspan="14"></td></tr>':'<tr class="group-gap"><td colspan="14"></td></tr>').join(''):'<tr><td colspan="14">No inhouse component rows were found in the uploaded workbook.</td></tr>';
     const notices=[];
     if(data.inhouseHasMdf)notices.push('Seven blank rows are reserved at the top for the separate MDF BOM. Nut components are omitted because they belong in that separate MDF BOM.');
     if(data.inhouseMissingTileData?.length)notices.push(`Missing tile or pasting component details: ${data.inhouseMissingTileData.join(', ')}. Add the component values to the workbook before using this BOM.`);
     $('inhouseNotice').textContent=notices.join(' ');
     $('inhouseNotice').classList.toggle('warning',Boolean(data.inhouseMissingTileData?.length));
-    $('inhouseCaption').textContent=`Generated ${currentInhouseGroups.reduce((sum,group)=>sum+group.rows.filter(row=>!row.isInhouseSectionLabel).length,0)} inhouse component rows across ${currentInhouseGroups.length} material groups.`;
+    $('inhouseCaption').textContent=`Generated ${currentInhouseGroups.reduce((sum,group)=>sum+group.rows.length,0)} inhouse component rows across ${currentInhouseGroups.length} material groups.`;
     $('inhouseDownload').classList.toggle('visible',currentInhouseGroups.length>0);$('inhouseDownload').disabled=!currentInhouseGroups.length;
   }
   function xmlEscape(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -336,7 +335,7 @@
   }
   function inhouseSheet(groups,data){
     let sheetRow=2+(data?.inhouseHasMdf?7:0);const groupStarts=new Map();
-    groups.forEach((group,index)=>{groupStarts.set(group.name,sheetRow+(group.formulaTargetOffset||0));sheetRow+=group.rows.length+(index<groups.length-1?1:0);});
+    groups.forEach((group,index)=>{groupStarts.set(group.name,sheetRow);sheetRow+=group.rows.length+(index<groups.length-1?1:0);});
     const formulaCells={};sheetRow=2+(data?.inhouseHasMdf?7:0);
     groups.forEach((group,index)=>{
       group.rows.forEach((row,rowIndex)=>{const target=row.inhouseFormulaTarget,targetRow=groupStarts.get(target);if(targetRow)formulaCells[sheetRow+rowIndex]={9:'C'+targetRow};});
