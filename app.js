@@ -3,6 +3,7 @@
   const headers=['Product type','Revenue Segment','Parent SKU Code','Parent Product Name','Characters Length (40 Characters)','Child SKU Code','Child Description','Characters Length (40 Characters)','Packing Dimensions (MM) (LXWXH)','Product Dimensions (MM) (LXWXH)','Gross Weight (KG)','Net Weight (KG)','SAP Code Parent','SAP Code Child','Plant','Conversion Factor'];
   const hardwareHeaders=['Product Type','Hardware Material Code','Hardware Material Description','Character Length (40 Character Limit)','Plant Code','Base UOM','Base Qty','Alt BOM','Component Material Code','Component Material Description','Component Quantity','UOM','Final Consumption Plant','Product Owning Plant'];
   const inhouseHeaders=['Product Type','Inhouse Material Code','Inhouse Material Description','Character Length (40 Character Limit)','Plant','Base UOM','Base Qty','Alt BOM','Component Material Code','Component Material Description','Component Quantity / Nesting (Max. 3 decimals)','UOM','Final Consumption Plant','Product Owning Plant'];
+  const childHeaders=['Child Material Code','Child Material Description','Plant','Alt BOM','Base Qty','Component Code','Component Material Description','Component Quantity (Max. 3 decimals)','UOM'];
   const productCodes=new Map([['coffee table','MCFT'],['dining table','MDINE'],['side table','MST'],['study table','ST'],['metal bed','MTB']]);
   const tileSlabMappings={
     '1800x1200':{
@@ -16,13 +17,18 @@
     '1800x1200':{AMW:'FT2',ALW:'FT2',AB:'FT2',BRN:'FT2',COB:'FT2',FW:'FT2',FOB:'N',GLDST:'N',OMG:'FT2',PRTB:'FT2',SW:'FT2',VA:'N',VRB:'FT2',VOB:'N'},
     '2400x1200':{AMW:'FT2',ALW:'N',AB:'FT2',BRN:'FT2',COB:'N',FW:'N',FOB:'FT2',GLDST:'FT2',JC:'FT2',OMG:'FT2',PRTB:'FT2',SL:'FT2',SW:'FT2',VA:'FT2',VRB:'FT2',VOB:'FT2'}
   };
+  const tileUomByMaterialCode=new Map(Object.entries({
+    '3007011229':'FT2','3007011485':'N','3000002768':'FT2','3000002962':'FT2','3007011227':'N','3007011224':'N','3000002958':'FT2','3000002960':'FT2','3000002964':'FT2','3007011225':'FT2','3000003618':'FT2','3000002965':'FT2','3000002771':'FT2','3000002772':'FT2','3007011230':'FT2','3000002957':'FT2',
+    '3000002128':'FT2','3000001855':'FT2','3000002625':'FT2','3007014088':'FT2','3000001857':'FT2','3000001861':'FT2','3007013823':'N','3007013824':'N','3007014529':'FT2','3000002126':'FT2','3000002631':'FT2','3007013826':'N','3000002130':'FT2','3007013827':'N'
+  }));
   // file:// pages cannot fetch a sibling JSON file in current browsers. Keep this
   // snapshot aligned with Backend/tile-variants.json for that offline preview mode.
-  const localTileCodes=[['Amphora White','AMW'],['Alaska White','ALW'],['Antaliya Beige','AB'],['Breccia Natural','BRN'],['Colonial Black','COB'],['Fragment White','FW'],['Fossil Black','FOB'],['Golden Statuario','GLDST'],['Omani Grey','OMG'],['Portoro Black','PRTB'],['Simless White','SW'],['Versace Aloud','VA'],['Vibranium Brown','VRB'],['Volga Blue','VOB'],['Kshitij Sarkar','KSW']];
+  const localTileCodes=[['Amphora White','AMW'],['Alaska White','ALW'],['Antaliya Beige','AB'],['Breccia Natural','BRN'],['Colonial Black','COB'],['Fragment White','FW'],['Fossil Black','FOB'],['Golden Statuario','GLDST'],['Omani Grey','OMG'],['Portoro Black','PRTB'],['Simless White','SW'],['Versace Aloud','VA'],['Vibranium Brown','VRB'],['Volga Blue','VOB']];
   const tileCodes=new Map();
   const $=id=>document.getElementById(id),escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const normalized=value=>String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-  let currentGroups=[],currentModel='',currentData=null,currentHardwareRows=[],currentInhouseGroups=[],removedTileNames=new Set(),tileSignature='',tileLoadWarned=false;
+  function formatComponentQuantity(value){const text=String(value??'').trim(),numeric=text.replace(/,/g,'');if(!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(numeric))return text;const number=Number(numeric);return Number.isFinite(number)?String(Number(number.toFixed(3))):text;}
+  let currentGroups=[],currentModel='',currentData=null,currentHardwareRows=[],currentInhouseGroups=[],currentChildRows=[],removedTileNames=new Set(),tileSignature='',tileLoadWarned=false;
 
   async function loadTileVariants(){
     try{
@@ -89,9 +95,10 @@
     const items=[];
     for(const rows of sheets){
       for(let headerRow=0;headerRow<rows.length;headerRow++){
-        const labels=(rows[headerRow]||[]).map(value=>normalized(value));
+        const labels=Array.from(rows[headerRow]||[],value=>normalized(value));
         const slIndex=labels.findIndex(value=>/^(?:sl no|serial no|serial number)$/.test(value));
         const partIndex=labels.findIndex(value=>/^(?:part number|part no|component material code)$/.test(value));
+        const partNameIndex=labels.findIndex(value=>value==='part name'),nestingIndex=labels.findIndex(value=>value.startsWith('component quantity')||value==='nesting');
         const materialIndex=labels.findIndex(value=>value==='material'||value==='component material description');
         const qtyIndex=labels.findIndex(value=>/^(?:qty|quantity)$/.test(value));
         const uomIndex=labels.findIndex(value=>/^(?:uom|unit of measure)$/.test(value));
@@ -99,6 +106,7 @@
         for(let rowIndex=headerRow+1;rowIndex<rows.length;rowIndex++){
           const row=rows[rowIndex]||[],serial=String(row[slIndex]??'').trim().toUpperCase();
           if(!/^[A-Z]$/.test(serial))continue;
+          if(isChildBomItem({row:row.join(' ')}))continue;
           const partNumber=String(row[partIndex]??'').trim(),material=String(row[materialIndex]??'').trim(),quantity=String(row[qtyIndex]??'').trim(),uom=String(row[uomIndex]??'').trim();
           if(partNumber||material||quantity||uom)items.push({serial,partNumber,material,quantity,uom});
         }
@@ -108,6 +116,7 @@
     return items;
   }
   function extractInhouseItems(sheets){
+    const items=[];
     for(const rows of sheets){
       for(let headerRow=0;headerRow<rows.length;headerRow++){
         const labels=Array.from(rows[headerRow]||[],value=>normalized(value));
@@ -117,18 +126,40 @@
         const qtyIndex=labels.findIndex(value=>/^qty(?: quantity)?$/.test(value)),nestingIndex=labels.findIndex(value=>value.startsWith('component quantity')||value==='nesting');
         const uomIndex=labels.findIndex(value=>/^(?:uom|unit of measure)$/.test(value));
         if([slIndex,partNameIndex,partIndex,materialIndex,descriptionIndex,qtyIndex,nestingIndex,uomIndex].some(index=>index<0))continue;
-        const items=[];
         for(let rowIndex=headerRow+1;rowIndex<rows.length;rowIndex++){
           const row=rows[rowIndex]||[],serial=String(row[slIndex]??'').trim().toUpperCase();
           const item={serial,partName:String(row[partNameIndex]??'').trim(),partNumber:String(row[partIndex]??'').trim(),material:String(row[materialIndex]??'').trim(),description:String(row[descriptionIndex]??'').trim(),qty:String(row[qtyIndex]??'').trim(),nesting:String(row[nestingIndex]??'').trim(),uom:String(row[uomIndex]??'').trim()};
-          if(!serial||/^(?:top assembly|leg assembly|assembly)$/i.test(item.partName))continue;
+          const childBomTagged=Object.values(item).some(value=>/\bchild\s*bom\b/i.test(String(value??'')));
+          if((!serial&&!childBomTagged)||/^(?:top assembly|leg assembly|assembly)$/i.test(item.partName))continue;
           if(Object.values(item).some(value=>value&&value!=='-'))items.push(item);
         }
-        return items;
+        break;
       }
     }
-    return [];
+    return items;
   }
+  function extractMdfRows(sheets){
+    const normalizeHeader=value=>normalized(value).replace(/\b40 character limit\b/g,'40 character limit');
+    const normalizeMaterialCode=value=>{const code=String(value??'').trim().replace(/,/g,'');if(/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)[eE][+-]?\d+$/.test(code)){const numeric=Number(code);if(Number.isSafeInteger(numeric))return String(numeric);}return code.replace(/^(\d+)\.0+$/,'$1');};
+    for(const rows of sheets){
+      for(let headerRow=0;headerRow<rows.length;headerRow++){
+        const labels=Array.from(rows[headerRow]||[],normalizeHeader);
+        const indexes={productType:labels.findIndex(value=>value==='product type'),description:labels.findIndex(value=>value.startsWith('inhouse material description')),plant:labels.findIndex(value=>value==='plant'),uom:labels.findIndex(value=>value==='base uom'),baseQty:labels.findIndex(value=>value==='base qty'),altBom:labels.findIndex(value=>value==='alt bom'),code:labels.findIndex(value=>value==='component material code'),material:labels.findIndex(value=>value==='component material description'),quantity:labels.findIndex(value=>value.startsWith('component quantity')),componentUom:labels.findIndex(value=>value==='uom'),finalPlant:labels.findIndex(value=>value.startsWith('final consumption')),owningPlant:labels.findIndex(value=>value.startsWith('product owning plant'))};
+        if([indexes.productType,indexes.description,indexes.plant,indexes.code,indexes.material].some(index=>index<0))continue;
+        const extracted=[];
+        for(let rowIndex=headerRow+1;rowIndex<rows.length;rowIndex++){
+          const source=rows[rowIndex]||[],value=index=>index<0?'':String(source[index]??'').trim(),materialCode=normalizeMaterialCode(source[indexes.code]);
+          const hasMainRowData=[indexes.productType,indexes.description,indexes.plant,indexes.code,indexes.material,indexes.quantity,indexes.componentUom].some(index=>value(index));
+          if(!hasMainRowData)break;
+          const row=[value(indexes.productType),'',value(indexes.description),String(value(indexes.description).length),value(indexes.plant),value(indexes.uom)||'N',value(indexes.baseQty)||'1',value(indexes.altBom)||'1',materialCode,value(indexes.material),formatComponentQuantity(value(indexes.quantity)),value(indexes.componentUom),value(indexes.finalPlant)||'MKA7',value(indexes.owningPlant)||'MKA7'];
+          extracted.push(row);
+        }
+        return extracted;
+      }
+    }
+    throw new Error('The MDF BOM workbook needs the Inhouse BOM columns, including Product Type, Inhouse Material Description, Component Material Code, and Component Material Description.');
+  }
+  function inhouseReserveCount(data){return data?.mdfRows?.length?data.mdfRows.length+1:7;}
   function extractData(sheets){
     if(!tileCodes.size)throw new Error('No tile variants are loaded. Check Backend/tile-variants.json and reload the page.');
     const rows=sheets.flat();
@@ -148,6 +179,7 @@
     }
     return groups;
   }
+  function activeTileVariants(){return currentGroups.map(group=>[group.name,tileCodes.get(group.name)]).filter(([,shortForm])=>Boolean(shortForm));}
   function componentValues(item){
     if(!item)return {partNumber:'',material:'',quantity:'',uom:''};
     const isNumber=value=>/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(String(value??'').trim().replace(/,/g,''));
@@ -159,59 +191,74 @@
   function inhouseRow(data,description,component={},rowProductType=data.productType){
     const title=String(description??'').slice(0,40),values=componentValues(component);
     const plant=/corrugated box/i.test(`${description} ${component.partName??''} ${component.material??''} ${component.description??''}`)?'MTN2':'MKA7';
-    const row=[rowProductType,'',title,String(title.length),plant,'N','1','1',values.partNumber,values.material,values.quantity,values.uom,'MKA7','MKA7'];
+    const row=[rowProductType,'',title,String(title.length),plant,'N','1','1',values.partNumber,values.material,formatComponentQuantity(values.quantity),values.uom,'MKA7','MKA7'];
     if(component.formulaTarget)row.inhouseFormulaTarget=component.formulaTarget;
     return row;
+  }
+  function fitInhouseDescription(description,data){
+    let title=String(description??'');
+    if(title.length>40&&data.size==='Small')title=title.replace(/\bSmall\b/,'S');
+    return title.slice(0,40);
   }
   function linkInhouseRow(data,description,componentDescription,rowProductType=data.productType,formulaTarget=''){
     return inhouseRow(data,description,{material:componentDescription,qty:'1',nesting:'1',uom:'N',formulaTarget},rowProductType);
   }
   function inhouseGroup(name,rows){return {name,rows};}
-  function makeInhouseGroups(data){
+  function makeInhouseGroups(data,variants=[...tileCodes.entries()]){
     const items=data.inhouseItems||[],fields=item=>`${item.partName} ${item.material} ${item.description}`.toLowerCase();
     const tagged=items.map(item=>({item,text:fields(item),nesting:normalized(item.nesting)}));
-    const isMdf=tagged.some(entry=>/\bmdf\b/i.test(entry.text));
-    const nutEntries=tagged.filter(entry=>/\bnut\b/i.test(entry.text));
-    const tileEntries=tagged.filter(entry=>/\btile\b/i.test(`${entry.item.partName} ${entry.item.material}`)&&entry.item.partNumber);
+    const inhouseTagged=tagged.filter(entry=>!isChildBomItem(entry.item));
+    const isMdf=inhouseTagged.some(entry=>/\bmdf\b/i.test(entry.text));
+    const nutEntries=inhouseTagged.filter(entry=>/\bnut\b/i.test(entry.text));
+    const tileEntries=inhouseTagged.filter(entry=>{const sourceText=`${entry.item.partName} ${entry.item.material} ${entry.item.description}`;return /\btile\b/i.test(sourceText)&&(entry.item.partNumber||/\bslab\b|\b(?:1800|2400)\s*[x×]\s*1200\b/i.test(sourceText));}).sort((a,b)=>Number(/\bslab\b/i.test(b.text))-Number(/\bslab\b/i.test(a.text)));
     const tileSource=tileEntries[0]?.item;
     const tileSourceText=tileSource?`${tileSource.material} ${tileSource.description} ${tileSource.partName}`:'';
-    const sheetSizeMatch=tileSourceText.match(/\b(1800|2400)\s*[x×]\s*1200\b/i);
+    const sheetSizeMatch=tileSourceText.match(/\b(1800|2400)\s*[x×]\s*1200(?:\s*[x×]\s*15(?:\.0+)?\s*mm?)?\b/i);
     const sheetSize=sheetSizeMatch?`${sheetSizeMatch[1]}x1200`:'';
     const sourceTileName=tileSource?[...tileCodes.keys()].sort((a,b)=>b.length-a.length).find(name=>normalized(`${tileSource.material} ${tileSource.description} ${tileSource.partName}`).includes(normalized(name))):'';
     const tileCutMatch=tileSource?.description.match(/(\d{3,4})\s*[x×]\s*(\d{3,4})/i),tileCutSize=tileCutMatch?`${tileCutMatch[1]}x${tileCutMatch[2]}`:'';
-    const pasteEntries=tagged.filter(entry=>/araldite|pasting|adhesive/i.test(entry.text));
-    const frameEntries=tagged.filter(entry=>/^2[ab]/i.test(entry.item.serial)||/\bleg\b|top plate/i.test(entry.item.partName));
-    const powderEntries=tagged.filter(entry=>/^2[cd]/i.test(entry.item.serial)||/powder|\bdiesel\b|coating/i.test(entry.text));
+    const pasteEntries=inhouseTagged.filter(entry=>/araldite|pasting|adhesive/i.test(entry.text));
+    const frameEntries=inhouseTagged.filter(entry=>/^2[ab]/i.test(entry.item.serial)||/\bleg\b|top plate/i.test(entry.item.partName));
+    const powderEntries=inhouseTagged.filter(entry=>/^2[cd]/i.test(entry.item.serial)||/powder|\bdiesel\b|coating/i.test(entry.text));
     const excluded=new Set([...nutEntries,...tileEntries,...pasteEntries,...frameEntries,...powderEntries]);
-    const genericEntries=tagged.filter(entry=>!excluded.has(entry)&&!/\bmdf\b/i.test(entry.text)&&!/hardware bom|child bom/i.test(entry.nesting)&&!/^[A-Z]$/.test(entry.item.serial));
-    const packagingEntries=genericEntries.filter(entry=>/packag|plywood|plyboard|crate|corrugated|carton|stretch film|bubble|foam/i.test(entry.text));
-    const otherEntries=genericEntries.filter(entry=>!packagingEntries.includes(entry));
+    const genericEntries=inhouseTagged.filter(entry=>!excluded.has(entry)&&!/\bmdf\b/i.test(entry.text)&&!/hardware bom/i.test(entry.nesting)&&!/^[A-Z]$/.test(entry.item.serial));
+    const packagingRelatedEntries=genericEntries.filter(entry=>/packag|plywood|plyboard|crate|corrugated|carton|stretch|bubble|foam|thermocol|epe|bopp|tape|ldpe|polyethylene|polythene|wrap|film|\bnails?\b|\bbox\b/i.test(entry.text));
+    const packagingEntries=packagingRelatedEntries.filter(entry=>/plywood|plyboard|crate|corrugated/i.test(entry.text));
+    const otherEntries=genericEntries.filter(entry=>!packagingRelatedEntries.includes(entry));
     const groups=[];
     data.inhouseMissingTileData=[];
     if(tileEntries.length){
       if(!sheetSize)data.inhouseMissingTileData.push('Tile slab size was not found; expected 1800x1200 or 2400x1200 in the uploaded tile material.');
-      const base=`${data.model} ${data.productType}`;
-      const tileQuantity=componentValues(tileSource);
+      const sizeLabel=data.size?` ${data.size}`:'';
+      const base=`${data.model}${sizeLabel} ${data.productType}`;
       const addTileVariant=(tileName,tileShort)=>{
-        const slab=sheetSize?tileSlabMappings[sheetSize]?.[tileShort]:null;
+        const slab=(sheetSize?tileSlabMappings[sheetSize]?.[tileShort]:null)||Object.values(tileSlabMappings).map(mapping=>mapping[tileShort]).find(Boolean)||null;
         const isSourceTile=sourceTileName&&normalized(sourceTileName)===normalized(tileName);
-        const slabUom=sheetSize?tileSlabUoms[sheetSize]?.[tileShort]||(isSourceTile?tileQuantity.uom:''):'';
+        const variantSource=tileEntries.find(entry=>normalized(`${entry.item.material} ${entry.item.description} ${entry.item.partName}`).includes(normalized(tileName)))?.item||(isSourceTile?tileSource:null);
+        const tileQuantity=componentValues(variantSource);
         const partNumber=slab?.[0]||(isSourceTile?tileQuantity.partNumber:'');
-        const material=slab?.[1]||(isSourceTile?tileQuantity.material:'');
-        if(!partNumber||!material)data.inhouseMissingTileData.push(`${tileName} (${tileShort}) has no ${sheetSize||'matching-size'} tile material mapping.`);
+        const productName=slab?.[1]||(isSourceTile?tileQuantity.material:'');
+        const slabUom=tileUomByMaterialCode.get(String(partNumber??''))||(sheetSize?tileSlabUoms[sheetSize]?.[tileShort]||(variantSource?tileQuantity.uom:''):variantSource?tileQuantity.uom:'');
+        const nestingSource=String(variantSource?.nesting??'').trim()?variantSource:tileSource;
+        const rawNesting=String(nestingSource?.nesting??'').trim(),quantityParts=rawNesting.split('/').map(value=>value.trim()),sourceUoms=String(nestingSource?.uom??'').split('/').map(value=>value.trim().toUpperCase()),numericValue=value=>/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(String(value??'').replace(/,/g,''));
+        let nestingQuantity='';
+        if(quantityParts.length>1){let quantityIndex=sourceUoms.findIndex(value=>value===String(slabUom??'').toUpperCase());if(quantityIndex<0&&quantityParts.length===2)quantityIndex=String(slabUom??'').toUpperCase()==='FT2'?0:String(slabUom??'').toUpperCase()==='N'?1:-1;if(quantityIndex>=0&&quantityIndex<quantityParts.length&&numericValue(quantityParts[quantityIndex]))nestingQuantity=quantityParts[quantityIndex];}
+        else if(numericValue(rawNesting))nestingQuantity=rawNesting;
+        if(!partNumber||!productName)data.inhouseMissingTileData.push(`${tileName} (${tileShort}) has no ${sheetSize||'matching-size'} Tiles List product name or material code.`);
         if(!slabUom)data.inhouseMissingTileData.push(`${tileName} (${tileShort}) has no tile consumption UOM mapping for ${sheetSize||'the selected slab size'}.`);
-        const tileDesc=`${data.model} ${data.productType} Tile ${tileShort}${tileCutSize?`-${tileCutSize}`:''}`.slice(0,40);
-        const quantity=slabUom==='N'?'0.33':slabUom==='FT2'?'7.75':tileQuantity.quantity;
-        const component={partNumber,material,quantity,uom:slabUom||tileQuantity.uom};
-        groups.push(inhouseGroup(tileDesc,[inhouseRow(data,tileDesc,component)]));
-        const topDesc=`${base} Tile Top-${tileShort}`.slice(0,40);
-        const mdfDescription=`${data.model} ${data.productType} MDF`.slice(0,40);
-        const mdfPlaceholder=inhouseRow(data,topDesc,{material:isMdf?mdfDescription:'',qty:'1',nesting:'1',uom:'N'});
+        const tileDesc=fitInhouseDescription(`${base} Tile ${tileShort}${tileCutSize?`-${tileCutSize}`:''}`,data);
+        const component={partNumber,material:productName,quantity:nestingQuantity,uom:slabUom||tileQuantity.uom};
+        const tileRow=inhouseRow(data,tileDesc,component);tileRow[8]=String(partNumber??'').trim();tileRow[9]=productName;
+        groups.push(inhouseGroup(tileDesc,[tileRow]));
+        const topDesc=fitInhouseDescription(`${base} Tile Top-${tileShort}`,data);
+        const mdfPlaceholder=inhouseRow(data,topDesc);
+        mdfPlaceholder.fill('',8);
+        if(data.mdfRows?.length){mdfPlaceholder[9]=data.mdfRows[0][2]||'';mdfPlaceholder[10]='1';mdfPlaceholder[11]='N';mdfPlaceholder[12]='MKA7';mdfPlaceholder[13]='MKA7';mdfPlaceholder.inhouseFormulaTarget='__MDF_BOM__';}
         const topRows=[linkInhouseRow(data,topDesc,tileDesc,data.productType,tileDesc),mdfPlaceholder];
         if(pasteEntries.length)topRows.push(...pasteEntries.map(entry=>inhouseRow(data,topDesc,entry.item)));
         groups.push(inhouseGroup(topDesc,topRows));
       };
-      const variants=[...tileCodes.entries()],sourceVariant=variants.find(([name])=>sourceTileName&&normalized(name)===normalized(sourceTileName));
+      const sourceVariant=variants.find(([name])=>sourceTileName&&normalized(name)===normalized(sourceTileName));
       if(sourceVariant)addTileVariant(...sourceVariant);
       if(frameEntries.length){
         const frameDesc=`${data.model}${data.size?` ${data.size}`:''} ${data.productType} Leg Frame`.slice(0,40);
@@ -221,25 +268,24 @@
         const frameDesc=`${data.model}${data.size?` ${data.size}`:''} ${data.productType} Leg Frame`.slice(0,40),powderDesc=`Pow${data.size?` ${data.size}`:''} ${data.model} ${data.productType} Leg Frame`.slice(0,40);
         groups.push(inhouseGroup(powderDesc,[linkInhouseRow(data,powderDesc,frameDesc,'Pow Metal Frame'),...powderEntries.map(entry=>inhouseRow(data,powderDesc,entry.item,'Pow Metal Frame'))]));
       }
+      for(const entry of otherEntries){const desc=(entry.item.partName||entry.item.material||entry.item.description||`Component ${entry.item.serial}`).slice(0,40);groups.push(inhouseGroup(desc,[inhouseRow(data,desc,entry.item)]));}
       const plywoodEntries=packagingEntries.filter(entry=>/plywood|plyboard|crate/i.test(entry.text));
-      const corrugatedEntries=packagingEntries.filter(entry=>/corrugated|box/i.test(entry.text));
-      const otherPackagingEntries=packagingEntries.filter(entry=>!plywoodEntries.includes(entry)&&!corrugatedEntries.includes(entry));
+      const corrugatedEntries=packagingEntries.filter(entry=>/corrugated/i.test(entry.text));
       const componentRows=entries=>entries.map(entry=>{const desc=(entry.item.partName||entry.item.material||entry.item.description||`Component ${entry.item.serial}`).slice(0,40);return inhouseRow(data,desc,entry.item);});
       if(plywoodEntries.length)groups.push(inhouseGroup('Plywood Crate',componentRows(plywoodEntries)));
-      const boxRows=componentRows([...corrugatedEntries,...otherPackagingEntries]);
+      const boxRows=componentRows(corrugatedEntries);
       if(boxRows.length)groups.push(inhouseGroup(corrugatedEntries.length?'Corrugated Box':'Packaging',boxRows));
-      for(const entry of otherEntries){const desc=(entry.item.partName||entry.item.material||entry.item.description||`Component ${entry.item.serial}`).slice(0,40);groups.push(inhouseGroup(desc,[inhouseRow(data,desc,entry.item)]));}
       for(const variant of variants){if(sourceVariant&&variant===sourceVariant)continue;addTileVariant(...variant);}
       data.inhouseMissingTileData=[...new Set(data.inhouseMissingTileData)];
     }else{
       if(frameEntries.length){const frameDesc=`${data.model}${data.size?` ${data.size}`:''} ${data.productType} Leg Frame`.slice(0,40);groups.push(inhouseGroup(frameDesc,frameEntries.map(entry=>inhouseRow(data,frameDesc,entry.item))));}
-      for(const entry of [...powderEntries,...genericEntries]){const desc=(entry.item.partName||entry.item.material||entry.item.description||`Component ${entry.item.serial}`).slice(0,40);groups.push(inhouseGroup(desc,[inhouseRow(data,desc,entry.item)]));}
+      for(const entry of [...powderEntries,...otherEntries,...packagingEntries]){const desc=(entry.item.partName||entry.item.material||entry.item.description||`Component ${entry.item.serial}`).slice(0,40);groups.push(inhouseGroup(desc,[inhouseRow(data,desc,entry.item)]));}
     }
     data.inhouseHasMdf=true;
     return groups;
   }
   function allInhouseRows(groups,data){
-    const rows=data?.inhouseHasMdf?Array.from({length:7},()=>null):[];
+    const reserveCount=inhouseReserveCount(data),rows=Array.from({length:reserveCount},(_,index)=>data?.mdfRows?.[index]||null);
     groups.forEach((group,index)=>{rows.push(...group.rows);if(index<groups.length-1)rows.push(null);});
     return rows;
   }
@@ -261,18 +307,137 @@
     $('hardwareDownload').classList.toggle('visible',currentHardwareRows.length>0);$('hardwareDownload').disabled=!currentHardwareRows.length;
     $('downloadAll').disabled=!currentData;
   }
-  function renderInhouse(data){
-    currentInhouseGroups=makeInhouseGroups(data);
+  function renderInhouse(data,variants=activeTileVariants()){
+    currentInhouseGroups=makeInhouseGroups(data,variants);
     $('inhouseHead').innerHTML=inhouseHeaders.map(value=>`<th>${escapeHtml(value)}</th>`).join('');
-    const rows=allInhouseRows(currentInhouseGroups,data),reserveCount=data.inhouseHasMdf?7:0;
+    const rows=allInhouseRows(currentInhouseGroups,data),reserveCount=inhouseReserveCount(data);
     $('inhouseRows').innerHTML=rows.length?rows.map((row,index)=>row?`<tr>${row.map(value=>`<td>${escapeHtml(value)}</td>`).join('')}</tr>`:index<reserveCount?'<tr class="mdf-reserved-row"><td colspan="14"></td></tr>':'<tr class="group-gap"><td colspan="14"></td></tr>').join(''):'<tr><td colspan="14">No inhouse component rows were found in the uploaded workbook.</td></tr>';
     const notices=[];
-    if(data.inhouseHasMdf)notices.push('Seven blank rows are reserved at the top for the separate MDF BOM. Nut components are omitted because they belong in that separate MDF BOM.');
+    if(data.mdfRows?.length)notices.push(`${data.mdfRows.length} MDF BOM component row${data.mdfRows.length===1?' is':'s are'} placed at the top of Inhouse BOM.`);
+    else notices.push('Seven rows are reserved at the top for the MDF BOM.');
     if(data.inhouseMissingTileData?.length)notices.push(`Missing tile or pasting component details: ${data.inhouseMissingTileData.join(', ')}. Add the component values to the workbook before using this BOM.`);
     $('inhouseNotice').textContent=notices.join(' ');
     $('inhouseNotice').classList.toggle('warning',Boolean(data.inhouseMissingTileData?.length));
     $('inhouseCaption').textContent=`Generated ${currentInhouseGroups.reduce((sum,group)=>sum+group.rows.length,0)} inhouse component rows across ${currentInhouseGroups.length} material groups.`;
     $('inhouseDownload').classList.toggle('visible',currentInhouseGroups.length>0);$('inhouseDownload').disabled=!currentInhouseGroups.length;
+  }
+  function isChildBomItem(item){
+    const content=Object.values(item||{}).join(' ');
+    return /\bchild\s*bom\b/i.test(content)||normalized(content).includes('polypropylene leg bush');
+  }
+  function hasChildBomMarker(item){return Object.values(item||{}).some(value=>/\bchild\s*bom\b/i.test(String(value??'')));}
+  function childBoxNumber(item){const match=String(item?.serial||'').match(/^B\s*(\d+)$/i);return match?Number(match[1]):0;}
+  function childInhouseRowNumber(groupIndex,rowIndex){let row=2+inhouseReserveCount(currentData);for(let index=0;index<groupIndex;index++)row+=currentInhouseGroups[index].rows.length+1;return row+rowIndex;}
+  function childInhouseRouteForItem(item){
+    const partCode=String(item?.partNumber||'').trim(),material=normalized(item?.material||'');
+    for(let groupIndex=0;groupIndex<currentInhouseGroups.length;groupIndex++)for(let rowIndex=0;rowIndex<currentInhouseGroups[groupIndex].rows.length;rowIndex++){
+      const row=currentInhouseGroups[groupIndex].rows[rowIndex];
+      if((partCode&&String(row[8]||'').trim()===partCode)||(!partCode&&material&&normalized(row[9])===material))return {description:row[2],row:childInhouseRowNumber(groupIndex,rowIndex)};
+    }
+    return null;
+  }
+  function childFindPackagingRoute(boxNumber,pattern){
+    const candidates=(currentData?.inhouseItems||[]).filter(item=>pattern.test(`${item.partName} ${item.material} ${item.description}`)&&!/child\s*bom/i.test(`${item.partName} ${item.material} ${item.description}`));
+    for(const item of [...candidates.filter(item=>childBoxNumber(item)===boxNumber),...candidates.filter(item=>childBoxNumber(item)!==boxNumber)]){
+      const route=childInhouseRouteForItem(item);if(route)return route;
+    }
+    for(let groupIndex=0;groupIndex<currentInhouseGroups.length;groupIndex++)for(let rowIndex=0;rowIndex<currentInhouseGroups[groupIndex].rows.length;rowIndex++){
+      const group=currentInhouseGroups[groupIndex],row=group.rows[rowIndex];
+      if(pattern.test(`${group.name} ${row[2]} ${row[9]}`))return {description:row[2],row:childInhouseRowNumber(groupIndex,rowIndex)};
+    }
+    return null;
+  }
+  function childTileRoute(shortForm){
+    const tileTopNeedle=normalized(`Tile Top ${shortForm}`);
+    for(let groupIndex=0;groupIndex<currentInhouseGroups.length;groupIndex++){
+      const group=currentInhouseGroups[groupIndex];if(normalized(group.name).includes(tileTopNeedle)&&group.rows[0])return {description:group.rows[0][2],row:childInhouseRowNumber(groupIndex,0)};
+    }
+    for(let groupIndex=0;groupIndex<currentInhouseGroups.length;groupIndex++){
+      const group=currentInhouseGroups[groupIndex];if(normalized(group.name).includes(normalized(`Tile ${shortForm}`))&&group.rows[0])return {description:group.rows[0][2],row:childInhouseRowNumber(groupIndex,0)};
+    }
+    return null;
+  }
+  function childFrameRoute(){
+    for(let groupIndex=0;groupIndex<currentInhouseGroups.length;groupIndex++){
+      const group=currentInhouseGroups[groupIndex],rowIndex=group.rows.findIndex(row=>/^Pow\b/i.test(String(row[2]||''))&&/leg frame/i.test(String(row[2]||'')));
+      if(rowIndex>=0)return {description:group.rows[rowIndex][2],row:childInhouseRowNumber(groupIndex,rowIndex)};
+    }
+    return null;
+  }
+  function childSourceDescription(item){
+    const partName=String(item?.partName||'').replace(/^\s*child\s*bom\s*[:\-]?\s*/i,'').trim();
+    return String(item?.material||item?.description||partName||'').trim();
+  }
+  function childSourceQuantity(item){
+    const nesting=String(item?.nesting||'').trim(),text=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.test(nesting)?nesting:String(item?.qty||'').trim();
+    const match=text.match(/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/);
+    return match?formatComponentQuantity(match[0]):'';
+  }
+  function childBoxItems(data,boxNumber){
+    return (data.inhouseItems||[]).filter(item=>childBoxNumber(item)===boxNumber&&!isChildBomItem(item)&&!/corrugated|plywood|plyboard|crate/i.test(`${item.partName} ${item.material} ${item.description}`));
+  }
+  function childBomItems(data){
+    const items=(data.inhouseItems||[]).filter(isChildBomItem),bushItems=items.filter(item=>normalized(Object.values(item||{}).join(' ')).includes('polypropylene leg bush'));
+    const selectedBush=bushItems.find(item=>/^B\s*1$/i.test(String(item.serial||''))&&Boolean(childSourceQuantity(item)))||bushItems.find(item=>Boolean(childSourceQuantity(item)))||bushItems[0];
+    return items.filter(item=>!normalized(Object.values(item||{}).join(' ')).includes('polypropylene leg bush')||item===selectedBush);
+  }
+  function childInitialTileGroupIndex(data){
+    const tileSource=(data.inhouseItems||[]).find(item=>/\btile\b/i.test(`${item.partName} ${item.material} ${item.description}`)&&(/\bslab\b/i.test(`${item.partName} ${item.material} ${item.description}`)||item.partNumber));
+    if(tileSource){
+      const sourceText=normalized(`${tileSource.partName} ${tileSource.material} ${tileSource.description}`);
+      const tileName=[...tileCodes.keys()].sort((a,b)=>b.length-a.length).find(name=>sourceText.includes(normalized(name)));
+      if(tileName){const index=currentGroups.findIndex(group=>normalized(group.name)===normalized(tileName));if(index>=0)return index;}
+    }
+    return currentGroups.length?0:-1;
+  }
+  function buildChildRows(data){
+    const output=[],notices=[],boxCount=Math.max(1,data.packing.length),markedItems=childBomItems(data),frameRoute=childFrameRoute(),hardwareRoute=currentHardwareRows.length?{description:currentHardwareRows[0][2],row:2}:null;
+    const sourceHasData=item=>Boolean(item.partNumber||childSourceDescription(item)||childSourceQuantity(item)||item.uom);
+    const selectedGroupIndex=childInitialTileGroupIndex(data),groupPlans=selectedGroupIndex<0?[]:[
+      {group:currentGroups[selectedGroupIndex],groupIndex:selectedGroupIndex,boxIndexes:Array.from({length:boxCount},(_,index)=>index)},
+      ...currentGroups.map((group,groupIndex)=>({group,groupIndex,boxIndexes:[0]})).filter(plan=>plan.groupIndex!==selectedGroupIndex)
+    ];
+    groupPlans.forEach(({group,groupIndex,boxIndexes},planIndex)=>{
+      const shortForm=tileCodes.get(group.name)||'';
+      boxIndexes.forEach((boxIndex,sectionIndex)=>{
+        const boxNumber=boxIndex+1,summaryRow=2+currentGroups.slice(0,groupIndex).reduce((sum,previous)=>sum+previous.rows.length+1,0)+boxIndex,section=[];
+        const addRoute=(route,source,label,quantity='1')=>{
+          if(!route){notices.push(`${group.name}, Box ${boxNumber}: ${label} could not be routed from ${source}.`);return;}
+          section.push({row:['',route.description,'MKA7','1','1','',route.description,quantity,'N'],formula:{6:source==='Hardware BOM'?`'Hardware BOM'!C${route.row}`:`'Inhouse BOM'!C${route.row}`}});
+        };
+        if(boxNumber===1){
+          addRoute(childTileRoute(shortForm),'Inhouse BOM','Tile');
+          addRoute(childFindPackagingRoute(boxNumber,/corrugated/i),'Inhouse BOM','Box 1');
+          addRoute(childFindPackagingRoute(boxNumber,/plywood|plyboard|crate/i),'Inhouse BOM','Plywood Crate');
+          if(hardwareRoute)addRoute(hardwareRoute,'Hardware BOM','Hardware Pack');else notices.push(`${group.name}, Box 1: Hardware Pack route is unavailable.`);
+        }else{
+          let frameQty='1';
+          const frameItem=(data.inhouseItems||[]).find(item=>/^2A$/i.test(String(item.serial||''))&&/^\d+(?:\.0+)?$/.test(String(item.qty||'').trim()));
+          if(frameItem)frameQty=String(Number(frameItem.qty));
+          if(frameRoute)addRoute(frameRoute,'Inhouse BOM','Final Leg Frame',frameQty);else notices.push(`${group.name}, Box ${boxNumber}: Final Leg Frame route is unavailable.`);
+          addRoute(childFindPackagingRoute(boxNumber,/corrugated/i),'Inhouse BOM',`Box ${boxNumber}`);
+        }
+        for(const item of childBoxItems(data,boxNumber))if(sourceHasData(item))section.push({row:['','','MKA7','1','1',item.partNumber||'',childSourceDescription(item),childSourceQuantity(item),String(item.uom||'').trim()]});
+        if(boxNumber===1)for(const item of markedItems)if(sourceHasData(item))section.push({row:['','','MKA7','1','1',item.partNumber||'',childSourceDescription(item),childSourceQuantity(item),String(item.uom||'').trim()]});
+        section.forEach((entry,index)=>{
+          entry.row[1]=group.rows[boxIndex]?.[6]||'';
+          entry.formula={...entry.formula,1:index===0?`'Summary BOM Sheet'!G${summaryRow}`:`B${output.length+1}`};
+          output.push(entry);
+        });
+        if(sectionIndex<boxIndexes.length-1||planIndex<groupPlans.length-1)output.push(null);
+      });
+    });
+    if(!markedItems.length)notices.push('No source components marked “Child BOM” were found in the uploaded workbook.');
+    return {rows:output,notices:[...new Set(notices)]};
+  }
+  function renderChild(data){
+    const result=buildChildRows(data);currentChildRows=result.rows;
+    $('childHead').innerHTML=childHeaders.map(value=>`<th>${escapeHtml(value)}</th>`).join('');
+    $('childRows').innerHTML=currentChildRows.length?currentChildRows.map(entry=>entry?`<tr>${entry.row.map(value=>`<td>${escapeHtml(value)}</td>`).join('')}</tr>`:'<tr class="group-gap"><td colspan="9"></td></tr>').join(''):'<tr><td colspan="9">No Child BOM rows are available.</td></tr>';
+    $('childNotice').textContent=result.notices.join(' ');$('childNotice').classList.toggle('warning',result.notices.length>0);
+    const sectionCount=currentChildRows.filter(Boolean).length?1+currentChildRows.filter(entry=>entry===null).length:0;
+    $('childCaption').textContent=`Generated ${currentChildRows.filter(Boolean).length} rows across ${sectionCount} box section${sectionCount===1?'':'s'} for one tile variant.`;
+    $('childDownload').classList.toggle('visible',currentChildRows.some(Boolean));$('childDownload').disabled=!currentChildRows.some(Boolean);
   }
   function xmlEscape(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function colName(index){let number=index+1,label='';while(number){const rem=(number-1)%26;label=String.fromCharCode(65+rem)+label;number=Math.floor((number-1)/26);}return label;}
@@ -334,14 +499,18 @@
     return tableSheet('Hardware BOM',hardwareHeaders,rows,[20,24,40,24,16,14,12,12,24,38,18,14,24,24],{formulaColumns:{3:'C'},numericColumns:[6,7,10]});
   }
   function inhouseSheet(groups,data){
-    let sheetRow=2+(data?.inhouseHasMdf?7:0);const groupStarts=new Map();
+    const reserveCount=inhouseReserveCount(data);let sheetRow=2+reserveCount;const groupStarts=new Map();
     groups.forEach((group,index)=>{groupStarts.set(group.name,sheetRow);sheetRow+=group.rows.length+(index<groups.length-1?1:0);});
-    const formulaCells={};sheetRow=2+(data?.inhouseHasMdf?7:0);
+    const formulaCells={};sheetRow=2+reserveCount;
     groups.forEach((group,index)=>{
-      group.rows.forEach((row,rowIndex)=>{const target=row.inhouseFormulaTarget,targetRow=groupStarts.get(target);if(targetRow)formulaCells[sheetRow+rowIndex]={9:'C'+targetRow};});
+      group.rows.forEach((row,rowIndex)=>{const target=row.inhouseFormulaTarget,targetRow=target==='__MDF_BOM__'&&data?.mdfRows?.length?2:groupStarts.get(target);if(targetRow)formulaCells[sheetRow+rowIndex]={9:'C'+targetRow};});
       sheetRow+=group.rows.length+(index<groups.length-1?1:0);
     });
     return tableSheet('Inhouse BOM',inhouseHeaders,allInhouseRows(groups,data),[20,24,40,24,14,12,12,12,24,42,32,12,24,24],{formulaColumns:{3:'C'},formulaCells,numericColumns:[6,7,10]});
+  }
+  function childSheet(withRouting=false){
+    const formulaCells={};if(withRouting)currentChildRows.forEach((entry,index)=>{if(entry?.formula)formulaCells[index+2]=entry.formula;});
+    return tableSheet('Child BOM',childHeaders,currentChildRows.map(entry=>entry?.row||null),[24,40,14,12,12,24,44,32,14],{formulaCells,numericColumns:[3,4,7]});
   }
   function emptySheet(name){return {name,columns:[],rows:[],widths:[],formulaColumns:{},numericColumns:[],format2Columns:[],merges:[]};}
   function worksheetXml(sheet){
@@ -352,7 +521,7 @@
       const cells=row.map((value,col)=>{
         const ref=colName(col)+rowNumber,style=index===0?' s="1"':sheet.format2Columns.includes(col)?' s="2"':'';
         const directFormula=sheet.formulaCells[rowNumber]?.[col];
-        if(index>0&&directFormula&&/^[A-Z]+\d+$/.test(directFormula))return '<c r="'+ref+'"'+style+'><f>'+directFormula+'</f><v></v></c>';
+        if(index>0&&directFormula&&/^(?:[A-Z]+\d+|'[^']+'![A-Z]+\d+)$/.test(directFormula))return '<c r="'+ref+'" t="str"'+style+'><f>'+xmlEscape(directFormula)+'</f><v>'+xmlEscape(value)+'</v></c>';
         if(index>0&&sheet.formulaColumns[col])return '<c r="'+ref+'"'+style+'><f>LEN('+sheet.formulaColumns[col]+rowNumber+')</f><v>'+String(value??'').replace(/[^0-9]/g,'')+'</v></c>';
         if(index>0&&sheet.numericColumns.includes(col)&&value!==''&&Number.isFinite(Number(value)))return '<c r="'+ref+'"'+style+'><v>'+Number(value)+'</v></c>';
         if(sheet.merges.some(merge=>merge.col===col&&rowNumber>merge.start&&rowNumber<=merge.end))return '';
@@ -366,12 +535,12 @@
   }
   function createWorkbook(sheets){
     const sheetOverrides=sheets.map((sheet,index)=>'<Override PartName="/xl/worksheets/sheet'+(index+1)+'.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join('');
-    const workbookSheets=sheets.map((sheet,index)=>'<sheet name="'+xmlEscape(sheet.name)+'" sheetId="'+(index+1)+'" r:id="rId'+(index+1)+'"/>').join('');
+    const workbookSheets=sheets.map((sheet,index)=>'<sheet name="'+xmlEscape(sheet.name)+'" sheetId="'+(index+1)+'"'+(sheet.hidden?' state="hidden"':'')+' r:id="rId'+(index+1)+'"/>').join(''),activeTab=Math.max(0,sheets.findIndex(sheet=>!sheet.hidden));
     const sheetRelationships=sheets.map((sheet,index)=>'<Relationship Id="rId'+(index+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+(index+1)+'.xml"/>').join('');
     const files={
       '[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+sheetOverrides+'<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
       '_rels/.rels':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
-      'xl/workbook.xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'+workbookSheets+'</sheets></workbook>',
+      'xl/workbook.xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView activeTab="'+activeTab+'"/></bookViews><sheets>'+workbookSheets+'</sheets><calcPr calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/></workbook>',
       'xl/_rels/workbook.xml.rels':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+sheetRelationships+'<Relationship Id="rId'+(sheets.length+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
       'xl/styles.xml':'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="0.00"/></numFmts><fonts count="2"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'
     };
@@ -385,7 +554,12 @@
   function buildWorkbook(groups){return createWorkbook([summarySheet(groups)]);}
   function buildHardwareWorkbook(rows){return createWorkbook([hardwareSheet(rows)]);}
   function buildInhouseWorkbook(){return createWorkbook([inhouseSheet(currentInhouseGroups,currentData)]);}
-  function buildAllBomsWorkbook(){return createWorkbook([summarySheet(currentGroups),hardwareSheet(currentHardwareRows),inhouseSheet(currentInhouseGroups,currentData),emptySheet('Child BOM')]);}
+  function buildChildWorkbook(){
+    const supportingSheets=[summarySheet(currentGroups),hardwareSheet(currentHardwareRows),inhouseSheet(currentInhouseGroups,currentData)];
+    supportingSheets.forEach(sheet=>sheet.hidden=true);
+    return createWorkbook([...supportingSheets,childSheet(true)]);
+  }
+  function buildAllBomsWorkbook(){return createWorkbook([summarySheet(currentGroups),hardwareSheet(currentHardwareRows),inhouseSheet(currentInhouseGroups,currentData),childSheet(true)]);}
   function saveWorkbook(blob,filename){
     const url=URL.createObjectURL(blob),anchor=document.createElement('a');
     anchor.href=url;anchor.download=filename;anchor.style.display='none';document.body.appendChild(anchor);anchor.click();anchor.remove();
@@ -396,25 +570,28 @@
   function downloadAllBoms(event){if(!event?.isTrusted||event.currentTarget!==$('downloadAll')||!currentData)return;try{saveWorkbook(buildAllBomsWorkbook(),currentModel.replace(/[\\/:*?"<>|]/g,'_')+' - BOM.xlsx');}catch(error){reportDownloadError(error);}}
   function downloadHardware(event){if(!event?.isTrusted||event.currentTarget!==$('hardwareDownload')||!currentHardwareRows.length)return;try{saveWorkbook(buildHardwareWorkbook(currentHardwareRows),currentModel.replace(/[\\/:*?"<>|]/g,'_')+' - Hardware BOM.xlsx');}catch(error){reportDownloadError(error);}}
   function downloadInhouse(event){if(!event?.isTrusted||event.currentTarget!==$('inhouseDownload')||!currentInhouseGroups.length)return;try{saveWorkbook(buildInhouseWorkbook(),currentModel.replace(/[\\/:*?"<>|]/g,'_')+' - Inhouse BOM.xlsx');}catch(error){reportDownloadError(error);}}
+  function downloadChild(event){if(!event?.isTrusted||event.currentTarget!==$('childDownload')||!currentChildRows.some(Boolean))return;try{saveWorkbook(buildChildWorkbook(),currentModel.replace(/[\\/:*?"<>|]/g,'_')+' - Child BOM.xlsx');}catch(error){reportDownloadError(error);}}
   function download(event){if(!event?.isTrusted||event.currentTarget!==$('download')||!currentGroups.length)return;try{saveWorkbook(buildWorkbook(currentGroups),`Summary BOM Sheet - ${currentModel.replace(/[\\/:*?"<>|]/g,'_')}.xlsx`);}catch(error){reportDownloadError(error);}}
   function activateSectionTab(tab){
     const tabs=[...document.querySelectorAll('[role="tab"]')];
     for(const item of tabs){const active=item===tab;item.setAttribute('aria-selected',String(active));item.tabIndex=active?0:-1;}
     for(const panel of document.querySelectorAll('[role="tabpanel"]'))panel.hidden=panel.id!==tab.getAttribute('aria-controls');
   }
-  async function processFile(file){
-    const status=$('status');$('result').classList.remove('visible');status.classList.remove('error');status.textContent='Reading the Excel workbook…';
-    try{const data=extractData(await readWorkbook(await file.arrayBuffer()));currentModel=data.model;currentData=data;removedTileNames.clear();currentGroups=makeGroups(data);render(data,currentGroups);renderHardware(data);renderInhouse(data);status.textContent='';}
+  async function processFiles(files,mdfFiles=[]){
+    const selected=[...files].filter(Boolean),selectedMdf=[...mdfFiles].filter(Boolean);if(!selected.length)return;
+    const workbookCount=selected.length+selectedMdf.length,status=$('status');$('result').classList.remove('visible');status.classList.remove('error');status.textContent=`Reading ${workbookCount} Excel workbook${workbookCount===1?'':'s'}…`;
+    try{const [workbooks,mdfWorkbooks]=await Promise.all([Promise.all(selected.map(async file=>readWorkbook(await file.arrayBuffer()))),Promise.all(selectedMdf.map(async file=>readWorkbook(await file.arrayBuffer())))]),data=extractData(workbooks.flat());data.mdfRows=mdfWorkbooks.length?extractMdfRows(mdfWorkbooks.flat()):[];data.inhouseHasMdf=true;currentModel=data.model;currentData=data;removedTileNames.clear();currentGroups=makeGroups(data);render(data,currentGroups);renderHardware(data);renderInhouse(data,activeTileVariants());renderChild(data);status.textContent='';}
     catch(error){currentGroups=[];status.classList.add('error');status.textContent=error?.message||'Unable to process this workbook.';}
   }
   async function initialize(){
     await loadTileVariants();
-    $('bomFile').addEventListener('change',event=>{const file=event.target.files?.[0];if(file)processFile(file);});$('download').addEventListener('click',download);$('hardwareDownload').addEventListener('click',downloadHardware);$('inhouseDownload').addEventListener('click',downloadInhouse);$('downloadAll').addEventListener('click',downloadAllBoms);
+    $('bomFile').addEventListener('change',event=>processFiles(event.target.files,$('mdfFile').files));$('mdfFile').addEventListener('change',event=>processFiles($('bomFile').files,event.target.files));$('download').addEventListener('click',download);$('hardwareDownload').addEventListener('click',downloadHardware);$('inhouseDownload').addEventListener('click',downloadInhouse);$('childDownload').addEventListener('click',downloadChild);$('downloadAll').addEventListener('click',downloadAllBoms);
     const tablist=document.querySelector('[role="tablist"]'),tabs=[...tablist.querySelectorAll('[role="tab"]')];tabs.forEach(tab=>tab.tabIndex=tab.getAttribute('aria-selected')==='true'?0:-1);
     tablist.addEventListener('click',event=>{const tab=event.target.closest('[role="tab"]');if(tab)activateSectionTab(tab);});
     tablist.addEventListener('keydown',event=>{const active=tabs.indexOf(document.activeElement);if(active<0)return;let next;if(event.key==='ArrowRight')next=(active+1)%tabs.length;else if(event.key==='ArrowLeft')next=(active-1+tabs.length)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();tabs[next].focus();activateSectionTab(tabs[next]);});
-    $('tileVariants').addEventListener('click',event=>{const button=event.target.closest('[data-remove-tile]');if(!button||!currentData)return;const [removed]=currentGroups.splice(Number(button.dataset.removeTile),1);if(removed)removedTileNames.add(removed.name);render(currentData,currentGroups);renderInhouse(currentData);});
-    window.setInterval(async()=>{const changed=await loadTileVariants();if(changed&&currentData){currentGroups=makeGroups(currentData).filter(group=>!removedTileNames.has(group.name));render(currentData,currentGroups);renderInhouse(currentData);}},1500);
+    $('tileVariants').addEventListener('click',event=>{const button=event.target.closest('[data-remove-tile]');if(!button||!currentData)return;const [removed]=currentGroups.splice(Number(button.dataset.removeTile),1);if(removed)removedTileNames.add(removed.name);render(currentData,currentGroups);renderInhouse(currentData,activeTileVariants());renderChild(currentData);});
+    window.setInterval(async()=>{const changed=await loadTileVariants();if(changed&&currentData){currentGroups=makeGroups(currentData).filter(group=>!removedTileNames.has(group.name));render(currentData,currentGroups);renderInhouse(currentData,activeTileVariants());renderChild(currentData);}},1500);
   }
   initialize();
 })();
+
